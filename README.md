@@ -40,6 +40,9 @@ Prerequisites:
 
 ### Installation:
 ```
+conda create -n cleanba -c conda-forge mamba conda-lock poetry='1.3.2' python=3.8
+conda activate cleanba
+poetry config experimental.new-installer false
 poetry install
 poetry run pip install --upgrade "jax[cuda11_cudnn82]==0.4.8" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 poetry run python cleanba/cleanba_ppo.py
