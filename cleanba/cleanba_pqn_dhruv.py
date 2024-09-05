@@ -853,13 +853,22 @@ if __name__ == "__main__":
             sharded_next_dones,
             learner_keys,
         )
+        
+        # put stuff back into queue
         unreplicated_params = flax.jax_utils.unreplicate(agent_state.params)
+        unreplicated_batch_stats = flax.jax_utils.unreplicate(agent_state.batch_stats)
+        
         for d_idx, d_id in enumerate(args.actor_device_ids):
             device_params = jax.device_put(unreplicated_params, local_devices[d_id])
+            device_batch_stats = jax.device_put(unreplicated_batch_stats, local_devices[d_id])
             for thread_id in range(args.num_actor_threads):
                 params_queues[d_idx * args.num_actor_threads + thread_id].put(
                     device_params
                 )
+                batch_stats_queues[d_idx * args.num_actor_threads + thread_id].put(
+                    device_batch_stats
+                )
+
 
         # record rewards for plotting purposes
         if learner_policy_version % args.log_frequency == 0:
