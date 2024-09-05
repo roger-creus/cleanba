@@ -1,0 +1,13 @@
+#!/bin/bash
+#SBATCH --partition=lab-real
+#SBATCH --cpus-per-task=24
+#SBATCH --gres=gpu:1 
+#SBATCH --mem=100G                                   
+#SBATCH --time=250:00:00                              
+#SBATCH -o /network/scratch/r/roger.creus-castanyer/slurm-%j.out # Write the log on scratch
+
+# 1. Load your environment
+module load anaconda/3
+conda activate /home/mila/r/roger.creus-castanyer/miniconda3/envs/craftax
+
+python3 $1 $2 $3 $4 $5 $6 $7 $8 $9 ${10} ${11} ${12} ${13} ${14} ${15} ${16} ${17} ${18}
