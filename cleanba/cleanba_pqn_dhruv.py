@@ -783,7 +783,7 @@ if __name__ == "__main__":
     dummy_writer = SimpleNamespace()
     dummy_writer.add_scalar = lambda x, y, z: None
 
-    unreplicated_params = flax.jax_utils.unreplicate(agent_state.params)
+    unreplicated_params = flax.jax_utils.unreplicate(train_state.params)
     for d_idx, d_id in enumerate(args.actor_device_ids):
         device_params = jax.device_put(unreplicated_params, local_devices[d_id])
         for thread_id in range(args.num_actor_threads):
