@@ -14,12 +14,10 @@ import chex
 import envpool
 import flax
 import flax.linen as nn
-import gym
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-import rlax
 import tyro
 from flax.training.train_state import TrainState
 from rich.pretty import pprint
@@ -47,7 +45,7 @@ class Args:
     "seed of the experiment"
     track: bool = False
     "if toggled, this experiment will be tracked with Weights and Biases"
-    wandb_project_name: str = "cleanRL"
+    wandb_project_name: str = "cleanba"
     "the wandb's project name"
     wandb_entity: str = None
     "the entity (team) of wandb's project"
@@ -63,7 +61,7 @@ class Args:
     "the logging frequency of the model performance (in terms of `updates`)"
 
     # Algorithm specific hparams
-    env_id: str = "Pong-v5"
+    env_id: str = "Breakout-v5"
     "the id of the environment"
     total_timesteps: int = 50000000
     "total timesteps of the experiments"
@@ -89,6 +87,8 @@ class Args:
     "the discount factor gamma"
     num_minibatches: int = 32
     "the number of mini-batches"
+    gradient_accumulation_steps: int = 1
+    "the number of gradient accumulation steps before performing an optimization step"
     update_epochs: int = 2
     "the K epochs to update the policy"
     norm_type: str = "layer_norm"
@@ -611,9 +611,12 @@ if __name__ == "__main__":
     network_variables = network.init(
         network_key, np.array([envs.single_observation_space.sample()]), train=False
     )
-    tx = optax.chain(
-        optax.clip_by_global_norm(args.max_grad_norm),
-        optax.radam(learning_rate=lr),
+    tx = optax.MultiSteps(
+        optax.chain(
+            optax.clip_by_global_norm(args.max_grad_norm),
+            optax.inject_hyperparams(optax.radam)(learning_rate=lr),
+        ),
+        every_k_schedule=args.gradient_accumulation_steps,
     )
     agent_state = CustomTrainState.create(
         apply_fn=network.apply,
@@ -636,6 +639,12 @@ if __name__ == "__main__":
         last_q: jax.Array, q_vals: jax.Array, reward: jax.Array, done: jax.Array
     ) -> jax.Array:
         """Q(lambda) target values."""
+
+        # with jax.disable_jit():
+        #     print(last_q.shape)
+        #     print(q_vals.shape)
+        #     print(reward.shape)
+        #     print(done.shape)
 
         def _get_target(
             lam_returns_and_next_q: Tuple[jax.Array, jax.Array],
@@ -700,7 +709,7 @@ if __name__ == "__main__":
         key: jax.random.PRNGKey,
     ):
         """Single-device update."""
-        
+
         # not needed as all values for bootstrapping are in storage
         del sharded_obs, sharded_done
 
@@ -716,6 +725,7 @@ if __name__ == "__main__":
             storage.next_obs[-1],
             train=False,
         )
+        last_q = jnp.max(last_q, axis=-1)
         targets = _compute_targets(
             last_q, storage.q_values, storage.rewards, storage.dones
         )
@@ -756,7 +766,7 @@ if __name__ == "__main__":
                 # also replace batch stats and grad steps
                 agent_state = agent_state.replace(
                     grad_steps=agent_state.grad_steps + 1,
-                    batch_states=updates["batch_stats"],
+                    batch_stats=updates["batch_stats"],
                 )
 
                 return agent_state, (loss, chosen_action_qvals)
@@ -846,21 +856,23 @@ if __name__ == "__main__":
                 sharded_next_dones.append(sharded_next_done)
         rollout_queue_get_time.append(time.time() - rollout_queue_get_time_start)
         training_time_start = time.time()
-        (agent_state, loss, chosen_action_qvals) = multi_device_update(
+        (agent_state, loss, chosen_action_qvals, learner_keys) = multi_device_update(
             agent_state,
             sharded_storages,
             sharded_next_obss,
             sharded_next_dones,
             learner_keys,
         )
-        
+
         # put stuff back into queue
         unreplicated_params = flax.jax_utils.unreplicate(agent_state.params)
         unreplicated_batch_stats = flax.jax_utils.unreplicate(agent_state.batch_stats)
-        
+
         for d_idx, d_id in enumerate(args.actor_device_ids):
             device_params = jax.device_put(unreplicated_params, local_devices[d_id])
-            device_batch_stats = jax.device_put(unreplicated_batch_stats, local_devices[d_id])
+            device_batch_stats = jax.device_put(
+                unreplicated_batch_stats, local_devices[d_id]
+            )
             for thread_id in range(args.num_actor_threads):
                 params_queues[d_idx * args.num_actor_threads + thread_id].put(
                     device_params
@@ -868,7 +880,6 @@ if __name__ == "__main__":
                 batch_stats_queues[d_idx * args.num_actor_threads + thread_id].put(
                     device_batch_stats
                 )
-
 
         # record rewards for plotting purposes
         if learner_policy_version % args.log_frequency == 0:
