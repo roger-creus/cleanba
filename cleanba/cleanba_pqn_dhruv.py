@@ -613,13 +613,13 @@ if __name__ == "__main__":
         optax.clip_by_global_norm(args.max_grad_norm),
         optax.radam(learning_rate=lr),
     )
-    train_state = CustomTrainState.create(
+    agent_state = CustomTrainState.create(
         apply_fn=network.apply,
         params=network_variables["params"],
         batch_stats=network_variables["batch_stats"],
         tx=tx,
     )
-    train_state = flax.jax_utils.replicate(train_state, devices=learner_devices)
+    agent_state = flax.jax_utils.replicate(agent_state, devices=learner_devices)
 
     # log
     print(
@@ -783,7 +783,7 @@ if __name__ == "__main__":
     dummy_writer = SimpleNamespace()
     dummy_writer.add_scalar = lambda x, y, z: None
 
-    unreplicated_params = flax.jax_utils.unreplicate(train_state.params)
+    unreplicated_params = flax.jax_utils.unreplicate(agent_state.params)
     for d_idx, d_id in enumerate(args.actor_device_ids):
         device_params = jax.device_put(unreplicated_params, local_devices[d_id])
         for thread_id in range(args.num_actor_threads):
@@ -889,9 +889,7 @@ if __name__ == "__main__":
                 flax.serialization.to_bytes(
                     [
                         vars(args),
-                        [
-                            agent_state.params
-                        ],
+                        [agent_state.params],
                     ]
                 )
             )
