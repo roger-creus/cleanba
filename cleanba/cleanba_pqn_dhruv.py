@@ -297,7 +297,7 @@ def rollout(
         """Action function."""
 
         obs = jnp.array(obs)
-        chex.assert_rank(obs, 2)  # [num_envs, observation_dim]
+        chex.assert_rank(obs, 4)  # [num_envs, 4, 84, 84]
 
         q_values = QNetwork(
             action_dim=envs.single_action_space.n,
@@ -598,7 +598,7 @@ if __name__ == "__main__":
     lr_scheduler = optax.linear_schedule(
         init_value=args.lr,
         end_value=1e-20,
-        transition_steps=num_decay_updates * args.num_minibatches * args.num_epochs,
+        transition_steps=num_decay_updates * args.num_minibatches * args.update_epochs,
     )
     lr = lr_scheduler if args.anneal_lr else args.lr
 
@@ -626,7 +626,7 @@ if __name__ == "__main__":
     # log
     print(
         network.tabulate(
-            network_key, np.array([envs.single_observation_space.sample()])
+            network_key, np.array([envs.single_observation_space.sample()]), train=False
         )
     )
 

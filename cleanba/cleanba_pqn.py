@@ -76,7 +76,7 @@ class Args:
     "the number of mini-batches"
     gradient_accumulation_steps: int = 1
     "the number of gradient accumulation steps before performing an optimization step"
-    update_epochs: int = 4
+    update_epochs: int = 2
     "the K epochs to update the policy"
     max_grad_norm: float = 10.0
     "the maximum norm for the gradient clipping"
@@ -125,10 +125,10 @@ def make_env(env_id, seed, num_envs):
             env_id,
             env_type="gym",
             num_envs=num_envs,
-            episodic_life=True,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 6
-            repeat_action_probability=0.0,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 12
-            noop_max=30,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 12 (no-op is deprecated in favor of sticky action, right?)
-            full_action_space=False,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) Tab. 5
+            episodic_life=False,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 6
+            repeat_action_probability=0.25,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 12
+            noop_max=1,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 12 (no-op is deprecated in favor of sticky action, right?)
+            full_action_space=True,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) Tab. 5
             max_episode_steps=ATARI_MAX_FRAMES,  # Hessel et al. 2018 (Rainbow DQN), Table 3, Max frames per episode
             reward_clip=True,
             seed=seed,
