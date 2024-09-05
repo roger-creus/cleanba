@@ -67,6 +67,8 @@ class Args:
     "the id of the environment"
     total_timesteps: int = 50000000
     "total timesteps of the experiments"
+    total_decay_timesteps: int = 50000000
+    "total timesteps of the experiments"
     local_num_envs: int = 128
     "the number of parallel game environments"
     num_actor_threads: int = 2
@@ -242,8 +244,6 @@ class Transition(NamedTuple):
 class CustomTrainState(TrainState):
 
     batch_stats: Any
-    timesteps: int = 0
-    n_updates: int = 0
     grad_steps: int = 0
 
 
@@ -391,6 +391,9 @@ def rollout(
             env_send_time += time.time() - env_send_time_start
             storage_time_start = time.time()
 
+            # set obs to next obs -- completes loop and makes sure `cached_obs` is right next time
+            obs = next_obs
+
             # info["TimeLimit.truncated"] has a bug https://github.com/sail-sg/envpool/issues/239
             # so we use our own truncated flag
             truncated = info["elapsed_step"] >= envs.spec.config.max_episode_steps
@@ -437,7 +440,7 @@ def rollout(
             )
         )
 
-        # obs, done are still in the host
+        # obs, done are still in the host (these are last values)
         sharded_obs = jax.device_put_sharded(
             np.split(obs, len(learner_devices)), devices=learner_devices
         )
@@ -588,15 +591,14 @@ if __name__ == "__main__":
     envs = make_env(args.env_id, args.seed, args.local_num_envs)()
 
     # schedules
+    num_decay_updates = args.total_decay_timesteps // args.num_steps // args.num_envs
     eps_scheduler = optax.linear_schedule(
-        args.eps_start, args.eps_end, args.eps_decay * args.num_decay_updates
+        args.eps_start, args.eps_end, args.eps_decay * num_decay_updates
     )
     lr_scheduler = optax.linear_schedule(
         init_value=args.lr,
         end_value=1e-20,
-        transition_steps=args.num_decay_updates
-        * args.num_minibatches
-        * args.num_epochs,
+        transition_steps=num_decay_updates * args.num_minibatches * args.num_epochs,
     )
     lr = lr_scheduler if args.anneal_lr else args.lr
 
@@ -698,10 +700,13 @@ if __name__ == "__main__":
         key: jax.random.PRNGKey,
     ):
         """Single-device update."""
+        
+        # not needed as all values for bootstrapping are in storage
+        del sharded_obs, sharded_done
 
         storage: Transition = jax.tree_map(lambda *x: jnp.hstack(x), *sharded_storages)
-        obs = jnp.concatenate(sharded_obs)
-        done = jnp.concatenate(sharded_done)
+        # obs = jnp.concatenate(sharded_obs)
+        # done = jnp.concatenate(sharded_done)
 
         pqn_loss_grad_fn = jax.value_and_grad(pqn_loss, has_aux=True)
 
@@ -780,23 +785,34 @@ if __name__ == "__main__":
 
     params_queues = []
     rollout_queues = []
+    batch_stats_queues = []
     dummy_writer = SimpleNamespace()
     dummy_writer.add_scalar = lambda x, y, z: None
 
     unreplicated_params = flax.jax_utils.unreplicate(agent_state.params)
+    unreplicated_batch_stats = flax.jax_utils.unreplicate(agent_state.batch_stats)
     for d_idx, d_id in enumerate(args.actor_device_ids):
         device_params = jax.device_put(unreplicated_params, local_devices[d_id])
+        device_batch_stats = jax.device_put(
+            unreplicated_batch_stats, local_devices[d_id]
+        )
         for thread_id in range(args.num_actor_threads):
             params_queues.append(queue.Queue(maxsize=1))
             rollout_queues.append(queue.Queue(maxsize=1))
+            batch_stats_queues.append(queue.Queue(maxsize=1))
+
             params_queues[-1].put(device_params)
+            batch_stats_queues[-1].put(device_batch_stats)
+
             threading.Thread(
                 target=rollout,
                 args=(
                     jax.device_put(key, local_devices[d_id]),
                     args,
+                    eps_scheduler,
                     rollout_queues[-1],
                     params_queues[-1],
+                    batch_stats_queues[-1],
                     writer if d_idx == 0 and thread_id == 0 else dummy_writer,
                     learner_devices,
                     d_idx * args.num_actor_threads + thread_id,
