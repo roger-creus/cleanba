@@ -1,29 +1,18 @@
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
-ENV DEBIAN_FRONTEND=noninteractive 
+FROM nvidia/cuda:11.2.2-cudnn8-runtime-ubuntu20.04
 
 # install ubuntu dependencies
-RUN apt-get -y update  && \
-    apt-get -y install python3-pip xvfb ffmpeg git build-essential \
-    && apt-get install -y software-properties-common \
-    && apt-get -y update \
-    && add-apt-repository universe
-RUN apt-get -y update
-RUN apt-get -y install python3
-RUN apt-get -y install python3-pip
+ENV DEBIAN_FRONTEND=noninteractive 
+RUN apt-get update && \
+    apt-get -y install python3-pip xvfb ffmpeg git build-essential python-opengl
 RUN ln -s /usr/bin/python3 /usr/bin/python
 
 # install python dependencies
-COPY requirements.txt requirements.txt
-RUN pip install -r requirements.txt
+RUN mkdir cleanrl_utils && touch cleanrl_utils/__init__.py
+RUN pip install poetry --upgrade
+COPY pyproject.toml pyproject.toml
+COPY poetry.lock poetry.lock
+RUN poetry install
 
-# install requirements
-RUN pip install --upgrade "jax[cuda11_cudnn82]==0.4.8" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-
-# Optionally set the PYTHONPATH
-ENV PYTHONPATH="/src:${PYTHONPATH}"
-
-# Make useful directories
-RUN mkdir /dataset
-RUN mkdir /tmp_log
-RUN mkdir /final_log
-RUN mkdir /src
+COPY entrypoint.sh /usr/local/bin/
+RUN chmod 777 /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
