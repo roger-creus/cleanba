@@ -45,6 +45,7 @@ conda activate cleanba
 poetry config experimental.new-installer false
 poetry install
 poetry run pip install --upgrade "jax[cuda12_pip]==0.4.8" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+poetry run pip install -r requirements.txt
 poetry run python cleanba/cleanba_ppo.py
 poetry run python cleanba/cleanba_ppo.py --help
 ```
