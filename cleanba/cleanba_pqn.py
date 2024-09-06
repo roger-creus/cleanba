@@ -72,13 +72,13 @@ class Args:
     "the discount factor gamma"
     q_lambda: float = 0.65
     "the lambda for the general advantage estimation"
-    num_minibatches: int = 4
+    num_minibatches: int = 32
     "the number of mini-batches"
     gradient_accumulation_steps: int = 1
     "the number of gradient accumulation steps before performing an optimization step"
     update_epochs: int = 2
     "the K epochs to update the policy"
-    max_grad_norm: float = 100.0
+    max_grad_norm: float = 40.0
     "the maximum norm for the gradient clipping"
     channels: List[int] = field(default_factory=lambda: [16, 32, 32])
     "the channels of the CNN"
