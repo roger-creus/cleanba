@@ -76,7 +76,7 @@ class Args:
     "the number of mini-batches"
     gradient_accumulation_steps: int = 1
     "the number of gradient accumulation steps before performing an optimization step"
-    update_epochs: int = 2
+    update_epochs: int = 4
     "the K epochs to update the policy"
     max_grad_norm: float = 10.0
     "the maximum norm for the gradient clipping"
