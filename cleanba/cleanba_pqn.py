@@ -72,13 +72,13 @@ class Args:
     "the discount factor gamma"
     q_lambda: float = 0.65
     "the lambda for the general advantage estimation"
-    num_minibatches: int = 32
+    num_minibatches: int = 4
     "the number of mini-batches"
     gradient_accumulation_steps: int = 1
     "the number of gradient accumulation steps before performing an optimization step"
     update_epochs: int = 2
     "the K epochs to update the policy"
-    max_grad_norm: float = 10.0
+    max_grad_norm: float = 100.0
     "the maximum norm for the gradient clipping"
     channels: List[int] = field(default_factory=lambda: [16, 32, 32])
     "the channels of the CNN"
@@ -125,10 +125,10 @@ def make_env(env_id, seed, num_envs):
             env_id,
             env_type="gym",
             num_envs=num_envs,
-            episodic_life=False,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 6
-            repeat_action_probability=0.25,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 12
-            noop_max=1,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 12 (no-op is deprecated in favor of sticky action, right?)
-            full_action_space=True,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) Tab. 5
+            episodic_life=True,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 6
+            repeat_action_probability=0.0,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 12
+            noop_max=30,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) p. 12 (no-op is deprecated in favor of sticky action, right?)
+            full_action_space=False,  # Machado et al. 2017 (Revisitng ALE: Eval protocols) Tab. 5
             max_episode_steps=ATARI_MAX_FRAMES,  # Hessel et al. 2018 (Rainbow DQN), Table 3, Max frames per episode
             reward_clip=True,
             seed=seed,
@@ -250,7 +250,7 @@ def rollout(
         )
 
         max_q_value = jnp.max(logits, axis=-1)
-        return next_obs, action, max_q_value.squeeze(), key
+        return next_obs, action, max_q_value, key
 
     # put data in the last index
     episode_returns = np.zeros((args.local_num_envs,), dtype=np.float32)
@@ -543,8 +543,15 @@ if __name__ == "__main__":
         return all_returns
         
 
-    def pqn_loss(params, obs, returns):
-        values = get_value(params, obs)
+    def pqn_loss(params, obs, actions, returns):
+        # get actor logits
+        hidden = Network(args.channels, args.hiddens).apply(params.network_params, obs)
+        logits = Actor(envs.single_action_space.n).apply(params.actor_params, hidden)
+        
+        # gather the logits for the actions taken
+        action_masks = jax.nn.one_hot(actions, envs.single_action_space.n)
+        values = jnp.sum(logits * action_masks, axis=-1)
+        
         return 0.5 * jnp.mean((values - returns) ** 2)
 
     @jax.jit
@@ -580,12 +587,13 @@ if __name__ == "__main__":
             flatten_returns = flatten(returns)
             shuffled_storage = jax.tree_map(convert_data, flatten_storage)
             shuffled_returns = convert_data(flatten_returns)
-
+            
             def update_minibatch(agent_state, minibatch):
                 mb_obs, mb_actions, mb_returns = minibatch
                 loss, grads = pqn_loss_grad_fn(
                     agent_state.params,
                     mb_obs,
+                    mb_actions,
                     mb_returns,
                 )
                 grads = jax.lax.pmean(grads, axis_name="local_devices")

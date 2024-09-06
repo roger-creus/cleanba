@@ -615,6 +615,11 @@ if __name__ == "__main__":
             shuffled_advantages = convert_data(flatten_advantages)
             shuffled_target_values = convert_data(flatten_target_values)
 
+            with jax.disable_jit():
+                print(advantages.shape)
+                print(flatten_advantages.shape)
+                print(shuffled_advantages.shape)
+
             def update_minibatch(agent_state, minibatch):
                 mb_obs, mb_actions, mb_behavior_logprobs, mb_firststeps, mb_advantages, mb_target_values = minibatch
                 (loss, (pg_loss, v_loss, entropy_loss, approx_kl)), grads = ppo_loss_grad_fn(
