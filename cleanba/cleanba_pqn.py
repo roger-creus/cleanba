@@ -240,12 +240,12 @@ def rollout(
         hidden = Network(args.channels, args.hiddens).apply(params.network_params, next_obs)
         logits = Actor(envs.single_action_space.n).apply(params.actor_params, hidden)
         
-        key, subkey = jax.random.split(key)
+        key, subkey1, subkey2 = jax.random.split(key, 3)
         
         # epsilon-greedy
         action = jnp.where(
-            jax.random.uniform(subkey, (next_obs.shape[0],), minval=0, maxval=1) < epsilon,
-            jax.random.randint(subkey, (next_obs.shape[0],), 0, envs.single_action_space.n),
+            jax.random.uniform(subkey1, (next_obs.shape[0],), minval=0, maxval=1) < epsilon,
+            jax.random.randint(subkey2, (next_obs.shape[0],), 0, envs.single_action_space.n),
             jnp.argmax(logits, axis=-1),
         )
 
@@ -264,6 +264,7 @@ def rollout(
     actor_policy_version = 0
     next_obs = envs.reset()
     next_done = jnp.zeros(args.local_num_envs, dtype=jax.numpy.bool_)
+    next_reward = jnp.zeros(args.local_num_envs, dtype=jax.numpy.float32)
 
     @jax.jit
     def prepare_data(storage: List[Transition]) -> Transition:
@@ -304,6 +305,7 @@ def rollout(
         for _ in range(0, args.num_steps):
             cached_next_obs = next_obs
             cached_next_done = next_done
+            cached_next_reward = next_reward
             global_step += len(next_done) * args.num_actor_threads * len_actor_device_ids * args.world_size
             
             epsilon = linear_schedule(args.start_epsilon, args.end_epsilon, args.exploration_fraction * args.total_timesteps, global_step)
@@ -332,7 +334,7 @@ def rollout(
                     actions=action,
                     values=value,
                     env_ids=env_id,
-                    rewards=next_reward,
+                    rewards=cached_next_reward,
                     truncations=truncated,
                     terminations=info["terminated"],
                     firststeps=info["elapsed_step"] == 0,
@@ -359,6 +361,7 @@ def rollout(
         # next_obs, next_done are still in the host
         sharded_next_obs = jax.device_put_sharded(np.split(next_obs, len(learner_devices)), devices=learner_devices)
         sharded_next_done = jax.device_put_sharded(np.split(next_done, len(learner_devices)), devices=learner_devices)
+        shared_next_reward = jax.device_put_sharded(np.split(next_reward, len(learner_devices)), devices=learner_devices)
         payload = (
             global_step,
             actor_policy_version,
@@ -366,6 +369,7 @@ def rollout(
             sharded_storage,
             sharded_next_obs,
             sharded_next_done,
+            shared_next_reward,
             np.mean(params_queue_get_time),
             device_thread_id,
         )
@@ -525,17 +529,19 @@ if __name__ == "__main__":
         agent_state: TrainState,
         next_obs: np.ndarray,
         next_done: np.ndarray,
+        next_reward: np.ndarray,
         storage: Transition,
     ):
         next_value = get_value(agent_state.params, next_obs)
-        returns = jnp.zeros_like(next_value)
-        dones = jnp.concatenate([storage.dones, next_done[None, :]], axis=0)
-        values = jnp.concatenate([storage.values, next_value[None, :]], axis=0)
+        last_returns = next_reward + args.gamma * next_value * (1.0 - next_done)
         
-        _, returns = jax.lax.scan(
-            compute_qlambda_once, returns, (dones[1:], values[1:], storage.rewards), reverse=True
+        _, new_returns = jax.lax.scan(
+            compute_qlambda_once, last_returns, (storage.dones[1:], storage.values[1:], storage.rewards[1:]), reverse=True
         )
-        return returns
+        
+        all_returns = jnp.concatenate([new_returns, last_returns[None, :]], axis=0)
+        return all_returns
+        
 
     def pqn_loss(params, obs, returns):
         values = get_value(params, obs)
@@ -547,13 +553,15 @@ if __name__ == "__main__":
         sharded_storages: List,
         sharded_next_obs: List,
         sharded_next_done: List,
+        sharded_next_reward: List,
         key: jax.random.PRNGKey,
     ):
         storage = jax.tree_map(lambda *x: jnp.hstack(x), *sharded_storages)
         next_obs = jnp.concatenate(sharded_next_obs)
         next_done = jnp.concatenate(sharded_next_done)
+        next_reward = jnp.concatenate(sharded_next_reward)
         pqn_loss_grad_fn = jax.value_and_grad(pqn_loss, has_aux=False)
-        returns = compute_qlambda(agent_state, next_obs, next_done, storage)
+        returns = compute_qlambda(agent_state, next_obs, next_done, next_reward, storage)
 
         def update_epoch(carry, _):
             agent_state, key = carry
@@ -642,6 +650,7 @@ if __name__ == "__main__":
         sharded_storages = []
         sharded_next_obss = []
         sharded_next_dones = []
+        shared_next_rewards = []
         for d_idx, d_id in enumerate(args.actor_device_ids):
             for thread_id in range(args.num_actor_threads):
                 (
@@ -651,12 +660,14 @@ if __name__ == "__main__":
                     sharded_storage,
                     sharded_next_obs,
                     sharded_next_done,
+                    sharded_next_reward,
                     avg_params_queue_get_time,
                     device_thread_id,
                 ) = rollout_queues[d_idx * args.num_actor_threads + thread_id].get()
                 sharded_storages.append(sharded_storage)
                 sharded_next_obss.append(sharded_next_obs)
                 sharded_next_dones.append(sharded_next_done)
+                shared_next_rewards.append(sharded_next_reward)
         rollout_queue_get_time.append(time.time() - rollout_queue_get_time_start)
         training_time_start = time.time()
         (agent_state, loss, learner_keys) = multi_device_update(
@@ -664,6 +675,7 @@ if __name__ == "__main__":
             sharded_storages,
             sharded_next_obss,
             sharded_next_dones,
+            shared_next_rewards,
             learner_keys,
         )
         unreplicated_params = flax.jax_utils.unreplicate(agent_state.params)
