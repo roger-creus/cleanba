@@ -78,7 +78,7 @@ class Args:
     "the number of gradient accumulation steps before performing an optimization step"
     update_epochs: int = 2
     "the K epochs to update the policy"
-    max_grad_norm: float = 40.0
+    max_grad_norm: float = 10.0
     "the maximum norm for the gradient clipping"
     channels: List[int] = field(default_factory=lambda: [16, 32, 32])
     "the channels of the CNN"
@@ -86,9 +86,9 @@ class Args:
     "the hiddens size of the MLP"
     start_epsilon: float = 1.0
     "the starting epsilon for epsilon-greedy"
-    end_epsilon: float = 0.01
+    end_epsilon: float = 0.001
     "the ending epsilon for epsilon-greedy"
-    exploration_fraction: float = 0.1
+    exploration_fraction: float = 0.2
     "the fraction of the total timesteps to perform epsilon decay"
 
     actor_device_ids: List[int] = field(default_factory=lambda: [0])
@@ -494,7 +494,7 @@ if __name__ == "__main__":
         tx=optax.MultiSteps(
             optax.chain(
                 optax.clip_by_global_norm(args.max_grad_norm),
-                optax.inject_hyperparams(optax.adam)(
+                optax.inject_hyperparams(optax.radam)(
                     learning_rate=linear_schedule if args.anneal_lr else args.learning_rate
                 ),
             ),
