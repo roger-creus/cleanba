@@ -17,11 +17,18 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import rlax
 import tyro
 from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 from rich.pretty import pprint
 from tensorboardX import SummaryWriter
+
+from cleanrl_utils.mico_utils import (
+    cosine_distance,
+    representation_distances,
+    target_distances,
+)
 
 # Fix weird OOM https://github.com/google/jax/discussions/6332#discussioncomment-1279991
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.6"
@@ -79,6 +86,10 @@ class Args:
     "normalization type (either layer norm or none)"
     q_lambda: float = 0.65
     "the lambda for the general advantage estimation"
+    mico_beta: float = 0.1
+    "beta value for computing mico distances"
+    mico_loss_weight: float = 0.01
+    "contribution of mico weight to the loss"
     num_minibatches: int = 32
     "the number of mini-batches"
     gradient_accumulation_steps: int = 1
@@ -189,10 +200,14 @@ class CNN(nn.Module):
         x = normalize(x)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
+
+        representations = x
+
         x = nn.Dense(512, kernel_init=nn.initializers.he_normal())(x)
         x = normalize(x)
         x = nn.relu(x)
-        return x
+
+        return x, representations
 
 
 class QNetwork(nn.Module):
@@ -206,9 +221,10 @@ class QNetwork(nn.Module):
         # not normalizing input directly -- just do typical scaled normalization
         x = x / 255.0
 
-        x = CNN(norm_type=self.norm_type)(x)
+        x, representations = CNN(norm_type=self.norm_type)(x)
         x = nn.Dense(self.action_dim)(x)
-        return x
+
+        return x, representations
 
 
 class Transition(NamedTuple):
@@ -218,6 +234,7 @@ class Transition(NamedTuple):
     values: list
     env_ids: list
     rewards: list
+    representations: list
     truncations: list
     terminations: list
     firststeps: list  # first step of an episode
@@ -252,9 +269,9 @@ def rollout(
         """Gets actions and maximum Q value for a given state."""
 
         next_obs = jnp.array(next_obs)
-        logits = QNetwork(envs.single_action_space.n, args.norm_type).apply(
-            params, next_obs
-        )
+        logits, representation = QNetwork(
+            envs.single_action_space.n, args.norm_type
+        ).apply(params, next_obs)
 
         key, subkey1, subkey2 = jax.random.split(key, 3)
 
@@ -269,7 +286,7 @@ def rollout(
         )
 
         max_q_value = jnp.max(logits, axis=-1)
-        return next_obs, action, max_q_value, key
+        return next_obs, action, max_q_value, representation, key
 
     # put data in the last index
     episode_returns = np.zeros((args.local_num_envs,), dtype=np.float32)
@@ -346,7 +363,7 @@ def rollout(
             )
 
             inference_time_start = time.time()
-            cached_next_obs, action, value, key = get_action_and_value(
+            cached_next_obs, action, value, representation, key = get_action_and_value(
                 params, cached_next_obs, key, epsilon
             )
             inference_time += time.time() - inference_time_start
@@ -372,6 +389,7 @@ def rollout(
                     values=value,
                     env_ids=env_id,
                     rewards=cached_next_reward,
+                    representations=representation,
                     truncations=truncated,
                     terminations=info["terminated"],
                     firststeps=info["elapsed_step"] == 0,
@@ -600,13 +618,15 @@ if __name__ == "__main__":
     )
 
     @jax.jit
-    def get_value(
+    def get_value_and_reprs(
         params: flax.core.FrozenDict,
         obs: np.ndarray,
     ):
-        logits = QNetwork(envs.single_action_space.n, args.norm_type).apply(params, obs)
+        logits, representations = QNetwork(
+            envs.single_action_space.n, args.norm_type
+        ).apply(params, obs)
         max_q_value = jnp.max(logits, axis=-1)
-        return max_q_value
+        return max_q_value, representations
 
     def compute_qlambda_once(carry, inp, gamma, q_lambda):
         returns = carry
@@ -629,7 +649,9 @@ if __name__ == "__main__":
         next_reward: np.ndarray,
         storage: Transition,
     ):
-        next_value = get_value(agent_state.params, next_obs)
+        next_value, next_representations = get_value_and_reprs(
+            agent_state.params, next_obs
+        )
         last_returns = next_reward + args.gamma * next_value * (1.0 - next_done)
 
         _, new_returns = jax.lax.scan(
@@ -638,19 +660,42 @@ if __name__ == "__main__":
             (storage.dones[1:], storage.values[1:], storage.rewards[1:]),
             reverse=True,
         )
-
         all_returns = jnp.concatenate([new_returns, last_returns[None, :]], axis=0)
-        return all_returns
 
-    def pqn_loss(params, obs, actions, returns):
+        # now to get the middle representations, we just concatenate all the obs and just add to the end
+        all_representations = jnp.concatenate(
+            [storage.representations[1:], next_representations[None, :]], axis=0
+        )
+
+        return all_returns, all_representations
+
+    def pqn_loss(params, obs, actions, returns, next_representations):
         # get actor logits
-        logits = QNetwork(envs.single_action_space.n, args.norm_type).apply(params, obs)
+        logits, representations = QNetwork(
+            envs.single_action_space.n, args.norm_type
+        ).apply(params, obs)
 
         # gather the logits for the actions taken
         action_masks = jax.nn.one_hot(actions, envs.single_action_space.n)
         values = jnp.sum(logits * action_masks, axis=-1)
+        dqn_loss = 0.5 * jnp.mean((values - returns) ** 2)
 
-        return 0.5 * jnp.mean((values - returns) ** 2)
+        # TODO get representation loss
+
+        # here we do return-based bisimulation, where we compute D(s_0, s_T) given Q-lambda returns
+        # because we don't have target network, we reuse same representations coming from online
+        target_dist = target_distances(
+            next_representations, returns, distance_fn=cosine_distance, gamma=args.gamma
+        )
+        online_dist = representation_distances(
+            representations,
+            representations,
+            distance_fn=cosine_distance,
+            beta=args.mico_beta,
+        )
+        metric_loss = jax.vmap(rlax.huber_loss)(online_dist, target_dist).mean()
+
+        return dqn_loss + args.mico_loss_weight * metric_loss
 
     @jax.jit
     def single_device_update(
@@ -666,7 +711,7 @@ if __name__ == "__main__":
         next_done = jnp.concatenate(sharded_next_done)
         next_reward = jnp.concatenate(sharded_next_reward)
         pqn_loss_grad_fn = jax.value_and_grad(pqn_loss, has_aux=False)
-        returns = compute_qlambda(
+        returns, next_representations = compute_qlambda(
             agent_state, next_obs, next_done, next_reward, storage
         )
 
@@ -689,16 +734,20 @@ if __name__ == "__main__":
 
             flatten_storage = jax.tree_map(flatten, storage)
             flatten_returns = flatten(returns)
+            flatten_next_representations = flatten(next_representations)
             shuffled_storage = jax.tree_map(convert_data, flatten_storage)
             shuffled_returns = convert_data(flatten_returns)
+            shuffled_next_representations = convert_data(flatten_next_representations)
 
             def update_minibatch(agent_state, minibatch):
-                mb_obs, mb_actions, mb_returns = minibatch
+                mb_obs, mb_actions, mb_returns, mb_next_reprs = minibatch
+
                 loss, grads = pqn_loss_grad_fn(
                     agent_state.params,
                     mb_obs,
                     mb_actions,
                     mb_returns,
+                    mb_next_reprs,
                 )
                 grads = jax.lax.pmean(grads, axis_name="local_devices")
                 agent_state = agent_state.apply_gradients(grads=grads)
@@ -711,6 +760,7 @@ if __name__ == "__main__":
                     shuffled_storage.obs,
                     shuffled_storage.actions,
                     shuffled_returns,
+                    shuffled_next_representations,
                 ),
             )
             return (agent_state, key), loss
