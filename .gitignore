@@ -3,6 +3,7 @@
 static/cleanba/*.md
 .DS_Store
 
+launch*.sh
 slurm
 slurm-*.out
 wandb
