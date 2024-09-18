@@ -146,4 +146,4 @@ batch_jobs/*
 cluster_config.json
 run_config.json
 train_real
-start_pqn_exps.sh
+run_all_atari15_3seed.sh
