@@ -58,7 +58,7 @@ class Args:
     "the id of the environment"
     total_timesteps: int = 50000000
     "total timesteps of the experiments"
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 0.00025
     "the learning rate of the optimizer"
     local_num_envs: int = 64
     "the number of parallel game environments"
@@ -72,11 +72,11 @@ class Args:
     "the discount factor gamma"
     q_lambda: float = 0.65
     "the lambda for the general advantage estimation"
-    num_minibatches: int = 16
+    num_minibatches: int = 32
     "the number of mini-batches"
     gradient_accumulation_steps: int = 1
     "the number of gradient accumulation steps before performing an optimization step"
-    update_epochs: int = 4
+    update_epochs: int = 2
     "the K epochs to update the policy"
     max_grad_norm: float = 10.0
     "the maximum norm for the gradient clipping"
@@ -86,9 +86,9 @@ class Args:
     "the hiddens size of the MLP"
     start_epsilon: float = 1.0
     "the starting epsilon for epsilon-greedy"
-    end_epsilon: float = 0.01
+    end_epsilon: float = 0.001
     "the ending epsilon for epsilon-greedy"
-    exploration_fraction: float = 0.2
+    exploration_fraction: float = 0.1
     "the fraction of the total timesteps to perform epsilon decay"
 
     actor_device_ids: List[int] = field(default_factory=lambda: [0])
