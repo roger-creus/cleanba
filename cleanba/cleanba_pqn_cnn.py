@@ -194,7 +194,6 @@ class CNN(nn.Module):
         x = nn.relu(x)
         return x
 
-
 class QNetwork(nn.Module):
     action_dim: int
     norm_type: str = "layer_norm"

@@ -40,7 +40,7 @@ class Args:
     "if toggled, this experiment will be tracked with Weights and Biases"
     wandb_project_name: str = "cleanba"
     "the wandb's project name"
-    wandb_entity: str = None
+    wandb_entity: str = "pqn-improvements"
     "the entity (team) of wandb's project"
     capture_video: bool = False
     "whether to capture videos of the agent performances (check out `videos` folder)"
@@ -72,7 +72,7 @@ class Args:
     "the discount factor gamma"
     q_lambda: float = 0.65
     "the lambda for the general advantage estimation"
-    num_minibatches: int = 32
+    num_minibatches: int = 16
     "the number of mini-batches"
     gradient_accumulation_steps: int = 1
     "the number of gradient accumulation steps before performing an optimization step"
@@ -86,7 +86,7 @@ class Args:
     "the hiddens size of the MLP"
     start_epsilon: float = 1.0
     "the starting epsilon for epsilon-greedy"
-    end_epsilon: float = 0.001
+    end_epsilon: float = 0.01
     "the ending epsilon for epsilon-greedy"
     exploration_fraction: float = 0.2
     "the fraction of the total timesteps to perform epsilon decay"
